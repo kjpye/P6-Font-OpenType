@@ -5,6 +5,306 @@ use v6;
 
 use P5pack;
 
+my $num-glyphs = -1;
+my $number-of-hmetrics = -1;
+
+class Font::OpenType::Table::Cmap {
+  has $.version;
+  has $.num-tables;
+  has @.encoding-record is rw;
+
+  method push-encoding-record($value) {
+    self.encoding-record.push: $value;
+  }
+
+  method read-cmap($table, $length) {
+    my ($version, $num-tables) = unpack 'nn', $table;
+    my $cmap = Font::OpenType::Table::Cmap.new(:$version, :$num-tables);
+
+
+    my $index = 4; # skip version and number of records
+    for ^$cmap.num-tables {
+      my ($platform-id, $encoding-id, $offset) = unpack 'nnN', ($table.subbuf: $index, 8);
+      $cmap.push-encoding-record: %(platform => $platform-id, encoding => $encoding-id, offset => $offset);
+      $index += 8;
+      note "Encoding table: $platform-id, $encoding-id, $offset";
+    }
+    for $cmap.encoding-record -> $encoding-table {
+      my $index = $encoding-table<offset>;
+      my $format = (unpack 'n', $table.subbuf($index, 2))[0];
+      given $format {
+        when 0 {
+note "Encoding table format 0";
+          my $length   = unpack 'n', $table.subbuf($index, 4);
+          my $language = unpack 'n', $table.subbuf($index, 6);
+          my $glyph-id-array = $table.subbuf($index+8, 256);
+        }
+        when 2 {
+          fail "Encoding table format 2 unimplemented";
+        }
+        when 4 {
+          my ($length, $language, $seg-countX2, $search-range, $entry-selector, $range-shift) = unpack 'nnnnnn', $table.subbuf($index+2, 12);
+          my $segcount = $seg-countX2 / 2;
+          my $tindex = $index + 12;
+          my @end-code  = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
+          $tindex += $seg-countX2;
+          $tindex += 2;
+          my @start-code = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
+          $tindex += $seg-countX2;
+          my @id-delta = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
+          $tindex += $seg-countX2;
+          my @id-rabge-offset = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
+          $tindex += $seg-countX2;
+          my $glyph-count = ($length - $tindex) / 2;
+          my @glyph-id-array = unpack 'n' xx $glyph-count, $table.subbuf($tindex, $glyph-count * 2);
+        }
+        when 6 {
+          fail "Encoding table format 6 unimplemented";
+        }
+        when 8 {
+          fail "Encoding table format 8 unimplemented";
+        }
+        when 10 {
+          fail "Encoding table format 10 unimplemented";
+        }
+        when 12 {
+          fail "Encoding table format 12 unimplemented";
+        }
+        when 13 {
+          fail "Encoding table format 13 unimplemented";
+        }
+        when 14 {
+          fail "Encoding table format 14 unimplemented";
+        }
+        default {
+          fail "Unknown encoding table format $format";
+        }
+      }
+    }
+    $cmap;
+  }
+}
+
+class Font::OpenType::Table::Cvt {
+  has @.control-value-table;
+
+  method read-cvt($table, $length) {
+    Font::OpenType::Table::Cvt.new(control-value-table => unpack('n*', $table));
+  }
+}
+
+class Font::OpenType::Table::Fpgm {
+  has $!program;
+
+  method read-fpgm($table, $length) {
+    Font::OpenType::Table::Fpgm.new(program => $table);
+  }
+}
+
+class Font::OpenType::Table::Glyf {
+  has @.glyphs;
+
+  method read-glyf($table, $length) {
+    Font::OpenType::Table::Glyf.new(glyph=> $table);
+  }
+}
+
+my $loc-format-type;
+
+class Font::OpenType::Table::Head {
+    has $.checksum-adjustment;
+    has $.magic-number;
+    has $.flags;
+    has $.units-per-em;
+    has $.created;
+    has $.modified;
+    has $.x-min;
+    has $.y-min;
+    has $.x-max;
+    has $.y-max;
+    has $.mac-style;
+    has $.lowest-rec-ppem;
+    has $.font-direction-hint;
+    has $.index-to-loc-format;
+    has $.glyph-data-format;
+
+  method read-head(Buf $table, Int $length) {
+    my ($major-version, $minor-version) = unpack 'nn', $table;
+    fail "Unknown font header table version $major-version.$minor-version"
+      unless $major-version == 1 && $minor-version == 0;
+    my $font-revision = unpack('N', $table.subbuf(4))[0];
+    $font-revision /= 65536.0;
+    my ($checksum-adjustment,
+        $magic-number,
+        $flags,
+        $units-per-em,
+        $created,
+        $modified,
+        $x-min,
+        $y-min,
+        $x-max,
+        $y-max,
+        $mac-style,
+        $lowest-rec-ppem,
+        $font-direction-hint,
+        $index-to-loc-format,
+        $glyph-data-format) =
+           unpack('NNnnQQnnnnnnnnn', $table.subbuf(8)); # TODO -- fix byte order of dates
+    fail "Bad magic number in Font header table" unless $magic-number == 0x5f0f3cf5;
+    $loc-format-type = $index-to-loc-format;
+    Font::OpenType::Table::Head.new(:$checksum-adjustment,
+                                    :$magic-number,
+                                    :$flags,
+                                    :$units-per-em,
+                                    :$created,
+                                    :$modified,
+                                    :$x-min,
+                                    :$y-min,
+                                    :$x-max;
+                                    :$y-max,
+                                    :$mac-style,
+                                    :$lowest-rec-ppem,
+                                    :$font-direction-hint,
+                                    :$index-to-loc-format,
+                                    :$glyph-data-format
+                                   );
+  }
+}
+  
+class Font::OpenType::Table::Hhea {
+  has $.major-version;
+  has $.minor-version;
+  has $.ascender;
+  has $.descender;
+  has $.line-gap;
+  has $.advance-width-max;
+  has $.min-left-side-bearing;
+  has $.min-right-side-bearing;
+  has $.x-max-extent;
+  has $.caret-slope-rise;
+  has $.caret-slope-run;
+  has $.caret-offset;
+  has $.r1;
+  has $.r2;
+  has $.r3;
+  has $.r4;
+  has $.metric-date-format;
+  has $.number-of-h-metrics;
+
+  my @hhea-table-definition = (
+    major-version          => 'uint16',
+    minor-version          => 'uint16',
+    ascender               => 'FWORD',
+    descender              => 'FWORD',
+    line-gap               => 'FWORD',
+    advance-width-max      => 'UFWORD',
+    min-left-side-bearing  => 'FWORD',
+    min-right-side-bearing => 'FWORD',
+    x-max-extent           => 'FWORD',
+    caret-slope-rise       => 'int16',
+    caret-slope-run        => 'int16',
+    caret-offset           => 'int16',
+    r1                     => 'int16',
+    r2                     => 'int16',
+    r3                     => 'int16',
+    r4                     => 'int16',
+    metric-date-format     => 'int16',
+    number-of-h-metrics    => 'int16',
+  );
+
+  method read-hhea($table, $length) {
+    my %args = read-generic-table($table, $length, @hhea-table-definition);
+    $number-of-hmetrics = %args<number-of-h-metrics>;
+    Font::OpenType::Table::Hhea.new(|%args);
+  }
+}
+
+class Font::OpenType::Table::OS2 {
+  has $.version;
+  has $.x-avg-char-width;
+  has $.us-weight-class;
+  has $.us-width-class;
+  has $.fs-type;
+  has $.y-subscript-x-size;
+  has $.y-subscript-y-size;
+  has $.y-subscript-x-offset;
+  has $.y-subscript-y-offset;
+  has $.y-superscript-x-size;
+  has $.y-superscript-y-size;
+  has $.y-superscript-x-offset;
+  has $.y-superscript-y-offset;
+  has $.y-strikeout-size;
+  has $.y-strikeout-position;
+  has $.s-family-class;
+  has $.panose;
+  has $.ul-unicodee-range1;
+  has $.ul-unicodee-range2;
+  has $.ul-unicodee-range3;
+  has $.ul-unicodee-range4;
+  has $.ach-vend-id;
+  has $.fs-selection;
+  has $.us-first-char-index;
+  has $.us-last-char-index;
+  has $.s-typo-ascender;
+  has $.s-typo-descender;
+  has $.s-typo-line-gap;
+  has $.us-win-ascent;
+  has $.ul-code-page-range1;
+  has $.ul-code-page-range2;
+  has $.sx-height;
+  has $.s-cap-height;
+  has $.us-default-char;
+  has $.us-break-char;
+  has $.us-max-content;
+  has $.us-lower-optical-point-size;
+  has $.us-upper-optical-point-size;
+
+  my @os2-table-definition = (
+    'version'                     => 'uint16',
+    'x-avg-char-width'            => 'int16',
+    'us-weight-class'             => 'uint16',
+    'us-width-class'              => 'uint16',
+    'fs-type'                     => 'uint16',
+    'y-subscript-x-size'          => 'int16',
+    'y-subscript-y-size'          => 'int16',
+    'y-subscript-x-offset'        => 'int16',
+    'y-subscript-y-offset'        => 'int16',
+    'y-superscript-x-size'        => 'int16',
+    'y-superscript-y-size'        => 'int16',
+    'y-superscript-x-offset'      => 'int16',
+    'y-superscript-y-offset'      => 'int16',
+    'y-strikeout-size'            => 'int16',
+    'y-strikeout-position'        => 'int16',
+    's-family-class'              => 'int16',
+    'panose'                      => 'uint8-10',
+    'ul-unicodee-range1'          => 'uint32',
+    'ul-unicodee-range2'          => 'uint32',
+    'ul-unicodee-range3'          => 'uint32',
+    'ul-unicodee-range4'          => 'uint32',
+    'ach-vend-id'                 => 'tag',
+    'fs-selection'                => 'uint16',
+    'us-first-char-index'         => 'uint16',
+    'us-last-char-index'          => 'uint16',
+    's-typo-ascender'             => 'int16',
+    's-typo-descender'            => 'int16',
+    's-typo-line-gap'             => 'int16',
+    'us-win-ascent'               => 'uint16',
+    'ul-code-page-range1'         => 'uint32',
+    'ul-code-page-range2'         => 'uint32',
+    'sx-height'                   => 'int16',
+    's-cap-height'                => 'int16',
+    'us-default-char'             => 'uint16',
+    'us-break-char'               => 'uint16',
+    'us-max-content'              => 'uint16',
+    'us-lower-optical-point-size' => 'uint16',
+    'us-upper-optical-point-size' => 'uint16',
+  );
+  
+  method read-os2($table, $length) {
+    Font::OpenType::Table::OS2.new(|read-generic-table($table, $length, @os2-table-definition));
+  }
+}
+
 sub read-file($filename) {
   my $fh = $filename.IO.open: :bin or die "Could not open file";
   my $type = $fh.read: 4;
@@ -21,23 +321,26 @@ sub read-file($filename) {
   }
 }
 
+my %table = ();
+
 sub read-ttf-file($fh) {
-note "Reading TTF format";
   $fh.seek: 4; # skip file type
   my $buf = $fh.read: 8;
   my ($num-tables, $search-range, $entry-selector, $range-shift) = unpack('nnnn', $buf);
-note "$num-tables, $search-range, $entry-selector, $range-shift";
 
+# read table record entries
+my $fulllength = 0;
   for ^$num-tables {
     $buf = $fh.read: 16;
     my ($table-tag, $check-sum, $offset, $length) = unpack('a4NNN', $buf);
     note "Table: $table-tag, $check-sum, $offset, $length";
-    my $pos = $fh.tell;
-    $fh.seek: $offset;
-    my $table = $fh.read: $length;
-    check-checksum($table, $check-sum);
-    read-table($table, $table-tag, $length);
-    $fh.seek: $pos;
+    %table{$table-tag} = %(check-sum => $check-sum, offset => $offset, length => $length, read => 0);
+    $fulllength += $length;
+  }
+
+# Read tables
+  for %table.keys -> $tag {
+    read-table $fh, $tag;
   }
 }
 
@@ -48,31 +351,41 @@ sub check-checksum(Buf $buf, $checksum) {
 sub read-ttc-file($fh) {
 }
 
-sub read-table(Buf $buf, $tag, $length) {
+sub read-table($fh, $tag) {
+  my $props = %table{$tag};
+  return if $props<read>; # We've already been here
+  $props<read> = 1; # optimism!
+  my $length = $props<length>;
+  $fh.seek: $props<offset>;
+  my $buf = $fh.read: $length;
+  check-checksum($buf, $props<check-sum>);
+
   given $tag {
     when 'OS/2' {
-      read-os2($buf, $length);
+      Font::OpenType::Table::OS2.read-os2($buf, $length);
     }
     when 'cmap' {
-      read-cmap($buf, $length);
+      Font::OpenType::Table::Cmap.read-cmap($buf, $length);
     }
     when 'cvt ' {
-      read-cvt($buf, $length);
+      Font::OpenType::Table::Cvt.read-cvt($buf, $length);
     }
     when 'fpgm' {
-      read-fpgm($buf, $length);
+      Font::OpenType::Table::Fpgm.read-fpgm($buf, $length);
     }
     when 'glyf' {
-      read-glyf($buf, $length);
+      Font::OpenType::Table::Glyf.read-glyf($buf, $length);
     }
     when 'head' {
-      read-head($buf, $length);
+      Font::OpenType::Table::Head.read-head($buf, $length);
     }
     when 'hhea' {
-      read-hhea($buf, $length);
+      Font::OpenType::Table::Hhea.read-hhea($buf, $length);
     }
     when 'hmtx' {
-# TODO -- when I can understand the table format
+      read-table($fh, 'hhea');  # needed for number-of-hmetrics
+      read-table($fh, 'maxp') ; # needed for num-glyphs
+      read-hmtx($buf, $length);
     }
     when 'kern' {
       read-kern($buf, $length);
@@ -87,8 +400,10 @@ sub read-table(Buf $buf, $tag, $length) {
       read-name($buf, $length);
     }
     when 'post' {
+	read-post($buf, $length);
     }
     when 'prep' {
+	read-prep($buf, $length);
     }
     default {
       fail "Unknown or unimplemented table type $tag";
@@ -96,57 +411,11 @@ sub read-table(Buf $buf, $tag, $length) {
   }
 }
 
-my @os2-table-definition = (
-  'version'                 => 'uint16',
-  'xAvgCharWidth'           => 'int16',
-  'usWeightClass'           => 'uint16',
-  'usWidthClass'            => 'uint16',
-  'fsType'                  => 'uint16',
-  'ySubscriptXSize'         => 'int16',
-  'ySubscriptYSize'         => 'int16',
-  'ySubscriptXOffset'       => 'int16',
-  'ySubscriptYOffset'       => 'int16',
-  'ySuperscriptXSize'       => 'int16',
-  'ySuperscriptYSize'       => 'int16',
-  'ySuperscriptXOffset'     => 'int16',
-  'ySuperscriptYOffset'     => 'int16',
-  'yStrikeoutSize'          => 'int16',
-  'yStrikeoutPosition'      => 'int16',
-  'sFamilyClass'            => 'int16',
-  'panose'                  => 'uint8-10',
-  'ulUnicodeeRange1'        => 'uint32',
-  'ulUnicodeeRange2'        => 'uint32',
-  'ulUnicodeeRange3'        => 'uint32',
-  'ulUnicodeeRange4'        => 'uint32',
-  'achVendID'               => 'tag',
-  'fsSelection'             => 'uint16',
-  'usFirstCharIndex'        => 'uint16',
-  'usLastCharIndex'         => 'uint16',
-  'sTypoAscender'           => 'int16',
-  'sTypoDescender'          => 'int16',
-  'sTypoLineGap'            => 'int16',
-  'usWinAscent'             => 'uint16',
-  'ulCodePageRange1'        => 'uint32',
-  'ulCodePageRange2'        => 'uint32',
-  'sxHeight'                => 'int16',
-  'sCapHeight'              => 'int16',
-  'usDefaultChar'           => 'uint16',
-  'usBreakChar'             => 'uint16',
-  'usMaxContent'            => 'uint16',
-  'usLowerOpticalPointSize' => 'uint16',
-  'usUpperOpticalPointSize' => 'uint16',
-);
-
-sub read-os2($table, $length) {
-  read-generic-table($table, $length, @os2-table-definition);
-}
-
 sub read-generic-table($table, $length, @table-definition) {
   my $index = 0;
   my %args;
   for @table-definition -> $pair {
     my ($name, $type) = $pair.kv;
-note "Looking for $type for $name";
     given $type {
       when 'uint16' {
         %args{$name} = (unpack 'n', $table.subbuf($index, 2))[0];
@@ -180,6 +449,11 @@ note "Looking for $type for $name";
         %args{$name} = (unpack 'n', $table.subbuf($index, 2))[0];
         $index += 2;
       }
+      when 'Fixed' {
+        my $value = (unpack 'N', $table.subbuf($index, 4))[0];
+        %args{$name} = $value / 65536.0;
+        $index += 4;
+      }
       when 'F2DOT14' {
         my $value = (unpack 'n', $table.subbuf($index, 2))[0];
         %args{$name} = $value / 16384.0;
@@ -197,138 +471,24 @@ note "Looking for $type for $name";
   %args;
 }
 
-sub read-cmap($table, $length) {
-  my ($version, $num-tables) = unpack 'nn', $table;
+my @advanced-width;
+my @left-side-bearing;
 
-  my @encoding-records;
-
-  my @tables;
-  my $index = 4; # skip version and number of records
-  for ^$num-tables {
-    my ($platform-id, $encoding-id, $offset) = unpack 'nnN', ($table.subbuf: $index, 8);
-    @tables.push: %(platform => $platform-id, encoding => $encoding-id, offset => $offset);
-    $index += 8;
-    note "Encoding table: $platform-id, $encoding-id, $offset";
+sub read-hmtx($table, $length) {
+  my $index = 0;
+  my $i = 0;
+  while $i++ < $number-of-hmetrics {
+    my ($aw, $lsb) = unpack 'nn', $table.subbuf($index);
+    $index += 4;
+    @advanced-width.push: $aw;
+    @left-side-bearing.push: $lsb;
   }
-  for @tables -> $encoding-table {
-    my $index = $encoding-table<offset>;
-    my $format = (unpack 'n', $table.subbuf($index, 2))[0];
-    given $format {
-      when 0 {
-note "Encoding table format 0";
-        my $length   = unpack 'n', $table.subbuf($index, 4);
-        my $language = unpack 'n', $table.subbuf($index, 6);
-        my $glyph-id-array = $table.subbuf($index+8, 256);
-      }
-      when 2 {
-        fail "Encoding table format 2 unimplemented";
-      }
-      when 4 {
-        my ($length, $language, $seg-countX2, $search-range, $entry-selector, $range-shift) = unpack 'nnnnnn', $table.subbuf($index+2, 12);
-        my $segcount = $seg-countX2 / 2;
-        my $tindex = $index + 12;
-        my @end-code  = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
-        $tindex += $seg-countX2;
-        $tindex += 2;
-        my @start-code = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
-        $tindex += $seg-countX2;
-        my @id-delta = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
-        $tindex += $seg-countX2;
-        my @id-rabge-offset = unpack 'n' xx $segcount, $table.subbuf($tindex, $seg-countX2);
-        $tindex += $seg-countX2;
-        my $glyph-count = ($length - $tindex) / 2;
-        my @glyph-id-array = unpack 'n' xx $glyph-count, $table.subbuf($tindex, $glyph-count * 2);
-      }
-      when 6 {
-        fail "Encoding table format 6 unimplemented";
-      }
-      when 8 {
-        fail "Encoding table format 8 unimplemented";
-      }
-      when 10 {
-        fail "Encoding table format 10 unimplemented";
-      }
-      when 12 {
-        fail "Encoding table format 12 unimplemented";
-      }
-      when 13 {
-        fail "Encoding table format 13 unimplemented";
-      }
-      when 14 {
-        fail "Encoding table format 14 unimplemented";
-      }
-      default {
-        fail "Unknown encoding table format $format";
-      }
-    }
+  while $i++ < $num-glyphs {
+    my $lsb = $table.subbuf($index).unpack: 'n';
+    $index += 2;
+    @left-side-bearing.push: $lsb;
   }
-}
-
-sub read-cvt($table, $length) {
-  my $count = $length / 2;
-  my $format = "n$count";
-  my @control-value-table = unpack $format, $table;
-}
-
-sub read-fpgm($table, $length) {
-  my $program = $table;
-}
-
-sub read-glyf($table, $length) {
-  my $glyphs = $table;
-}
-
-my $loc-format-type;
-
-sub read-head(Buf $table, Int $length) {
-  my ($major-version, $minor-version) = unpack 'nn', $table;
-  fail "Unknown font header tabole version $major-version.$minor-version"
-    unless $major-version == 1 && $minor-version == 0;
-  my $font-revision = unpack('N', $table.subbuf(4))[0];
-  $font-revision /= 65536.0;
-  my ($checksum-adjustment,
-      $magic-number,
-      $flags,
-      $units-per-em,
-      $created,
-      $modified,
-      $x-min,
-      $y-min,
-      $x-max,
-      $y-max,
-      $mac-style,
-      $lowest-rec-ppem,
-      $font-direction-hint,
-      $index-to-loc-format,
-      $glyph-data-format) =
-         unpack('NNnnQQnnnnnnnnn', $table.subbuf(8)); # TODO -- fix byte order of dates
-  fail "Bad magic number in Font header table" unless $magic-number == 0x5f0f3cf5;
-  $loc-format-type = $index-to-loc-format;
-}
-
-my @hhea-table-definition = (
-  major-version          => 'uint16',
-  minor-version          => 'uint16',
-  ascender               => 'FWORD',
-  descender              => 'FWORD',
-  line-gap               => 'FWORD',
-  advance-width-max      => 'UFWORD',
-  min-left-side-bearing  => 'FWORD',
-  min-right-side-bearing => 'FWORD',
-  x-max-extent           => 'FWORD',
-  caret-slope-rise       => 'int16',
-  caret-slope-run        => 'int16',
-  caret-offset           => 'int16',
-  r1                     => 'int16',
-  r2                     => 'int16',
-  r3                     => 'int16',
-  r4                     => 'int16',
-  metric-date-format     => 'int16',
-  number-of-h-metrics    => 'int16',
-);
-
-sub read-hhea($table, $length) {
-  read-generic-table($table, $length, @hhea-table-definition);
+  %table<htmx><read> = 1;
 }
 
 sub read-kern($table, $length) {
@@ -370,7 +530,7 @@ sub read-loca($table, $length) {
   }
 }
 
-my @maxp-table-definition= (
+my @maxp-table-definition = (
   version                  => 'Fixed',
   num-glyphs               => 'uint16',
   max-points               => 'uint16',
@@ -390,6 +550,7 @@ my @maxp-table-definition= (
 
 sub read-maxp($table, $length) {
   my %args = read-generic-table($table, $length, @maxp-table-definition);
+  my $num-glyphs = %args<num-glyphs>;
 }
 
 sub read-name($table, $length) {
@@ -430,6 +591,46 @@ sub read-name($table, $length) {
   }
   dd @lang-tag-record;
   my $strings = $table.subbuf($index);
+}
+
+my @post-table-definition = (
+    version => 'Fixed',
+    italic-angle => 'Fixed',
+    underline-position => 'FWord',
+    underline-thickness => 'FWord',
+    is-fixed-pitch      => 'uint32',
+    min-mem-type42      => 'uint32',
+    max-mem-type42      => 'uint32',
+    min-mem-type1       => 'uint32',
+    max-mem-type1       => 'uint32',
+);
+
+sub read-post($table, $length) {
+    my %args = read-generic-table($table, $length, @post-table-definition);
+    given %args<version> {
+	when 1.0 {
+	}
+	when 2.0 {
+	    my $num-glyphs = unpack 'n', $table.subbuf(28, 2);
+	    my $index = 30;
+	    my @glyph-name-index = unpack('n' xx $num-glyphs, $table.subbuf($index));
+	    my @names            = unpack('n' xx $num-glyphs, $table.subbuf($index + $num-glyphs*2));
+	}
+	when 2.5 {
+	    my $num-glyphs = unpack 'n', $table.subbug(28, 2);
+	    my $index = 30;
+	    my @glyph-name-index = unpack 'n' xx $num-glyphs, $table.subbuf($index);
+	}
+	when 3.0 {
+	}
+	default {
+	    fail "Unknown Postscript Table format $_";
+	}
+    }
+}
+
+sub read-prep($table, $length) {
+    my $program = $table;
 }
 
 my $filename = '/home/kevinp/Fonts/Univers/UniversBlack.ttf';
