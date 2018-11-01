@@ -219,7 +219,7 @@ class Font::OpenType::Table::Head {
      $!index-to-loc-format,
      $!glyph-data-format) =
            unpack('NNnnQQnnnnnnnnn', $table.subbuf(8)); # TODO -- fix byte order of dates
-    fail "Bad magic number in Font header table" unless $magic-number == 0x5f0f3cf5;
+    fail "Bad magic number in Font header table" unless $!magic-number == 0x5f0f3cf5;
     $loc-format-type = $!index-to-loc-format;
   }
 }
