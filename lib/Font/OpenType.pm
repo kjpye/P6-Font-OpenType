@@ -162,8 +162,8 @@ class Font::OpenType::Table::Cmap {
           $tindex += $seg-countX2;
           $encoding-table.id-range-offset = unpack 'n' xx $encoding-table.segcount, $table.subbuf($tindex, $seg-countX2);
           $tindex += $seg-countX2;
-          $encoding-table.glyph-count = ($length - $tindex) / 2;
-          $encoding-table.glyph-id-array = unpack 'n' xx $encoding-table.glyph-count,
+          $encoding-table.glyph-count = ($length - ($tindex - $index)) / 2;
+          $encoding-table.glyph-id-array = unpack 'n' x $encoding-table.glyph-count,
                                                   $table.subbuf($tindex, $encoding-table.glyph-count * 2);
         }
         when 6 {
@@ -208,14 +208,279 @@ class Font::OpenType::Table::Fpgm {
   }
 }
 
+class Font::OpenType::Glyf {
+  has $.number-of-contours is rw;
+  has $.x-min is rw;
+  has $.x-max is rw;
+  has $.y-min is rw;
+  has $.y-max is rw;
+  has @.end-pts-of-contours is rw;
+  has $.instruction-length is rw;
+  has $.instructions is rw;
+  has @.flags is rw;
+  has @.x-coordinates is rw;
+  has @.y-coordinates is rw;
+
+  our sub read-glyf($buf) {
+dd $buf;
+note "bytes available: {$buf.elems}";
+    my $glyf = Font::OpenType::Glyf.new();
+    my ($numcont, $xmin, $ymin, $xmax, $ymax) = unpack 'nnnnn', $buf;
+note "numcont: $numcont, xmin: $xmin, ymin: $ymin, xmax: $xmax, ymax: $ymax";
+    $glyf.number-of-contours = $numcont;
+    $glyf.x-min = $xmin;
+    $glyf.y-min = $ymin;
+    $glyf.x-max = $xmax;
+    $glyf.y-max = $ymax;
+    if $numcont < 0 {
+      fail "Composite glyphs not implemented";
+    }
+    $glyf.end-pts-of-contours = unpack('n' x $glyf.number-of-contours, $buf.subbuf(10));
+dd $glyf.end-pts-of-contours;
+    my $index = $glyf.number-of-contours * 2 + 10;
+    $glyf.instruction-length = (unpack 'n', $buf.subbuf($index))[0];
+    $index += 2;
+note "index pre-instructions: $index";
+note "instruction-length: {$glyf.instruction-length}";
+    $glyf.instructions = $buf.subbuf($index, $glyf.instruction-length);
+    $index += $glyf.instruction-length;
+note "index now $index";
+  # read flags -- complicated by flag compression
+    my $num-flags = $glyf.number-of-contours;
+note "num-flags: $num-flags";
+    while $num-flags > 0 {
+      my $flag = (unpack 'c', $buf.subbuf($index++))[0];
+note "flag: $flag";
+      $glyf.flags.push: $flag;
+      $num-flags--;
+      if $flag +& 0x08 { # repeat bit
+        my $repeat-count = (unpack 'c', $buf.subbuf($index++))[0];
+note "repeating flag: $repeat-count times";
+        $glyf.flags.append: $flag x $repeat-count;
+        $num-flags -= $repeat-count;
+      }
+    }
+  # read X coordinates -- even more complicated
+    my $oldvalue = 0;
+    for $glyf.flags -> $flag {
+      my $value;
+      if $flag +& 0x02 { # X_SHORT_VECTOR
+        $value = (unpack 'C', $buf.subbuf($index++))[0];
+        if $flag +& 0x10 {
+          $value = -$value;
+        }
+      } else {
+        if $flag +& 0x10 {
+          $value = $oldvalue;
+        } else {
+          $value = (unpack 'n', $buf.subbuf($index))[0];
+        }
+      }
+      $glyf.x-coordinates.push: $value;
+      $oldvalue = $value;
+    }
+  # read Y coordinates -- same as X coordinates
+    $oldvalue = 0;
+    for $glyf.flags -> $flag {
+      my $value;
+      if $flag +& 0x04 { # Y_SHORT_VECTOR
+        $value = (unpack 'C', $buf.subbuf($index++))[0];
+        if $flag +& 0x20 {
+          $value = -$value;
+        }
+      } else {
+        if $flag +& 0x20 {
+          $value = $oldvalue;
+        } else {
+          $value = (unpack 'n', $buf.subbuf($index))[0];
+        }
+      }
+      $glyf.y-coordinates.push: $value;
+      $oldvalue = $value;
+    }
+    $glyf;
+  }
+ 
+  sub push-bytes($count is copy, $program, $index is rw) {
+    print "pushb[{$count - 1}] ";
+    while --$count {
+      print $program[++$index];
+      print ',' if $count;
+    }
+    print "\n";
+  }
+
+  sub push-words($count is copy, $program, $index is rw) {
+    print "pushw[{$count - 1}] ";
+    while --$count {
+      my $word = $program[++$index] +< 8;
+      $word  +|= $program[++$index];
+      print $word,
+      print ',' if $count;
+    }
+    print "\n";
+  }
+
+  method dump() {
+    my $index = 0;
+    while $index < $!instructions.elems {
+      given $!instructions[$index] {
+        when 0x00 {
+          say "svtca[0]";
+        }
+        when 0x01 {
+          say "svtca[1]";
+        }
+        when 0x40 {
+          my $count = $!instructions[++$index];
+          print "npushb $count";
+          while $count-- {
+            my $byte = $!instructions[++$index];
+            print ",$byte";
+          }
+          say '';
+        }
+        when 0x41 {
+          my $count = $!instructions[++$index];
+          print "npushw $count";
+          while $count-- {
+            my $word = $!instructions[++$index] +< 8;
+            $word +|= $!instructions[++$index];
+            print ",$word";
+          }
+          say '';
+        }
+        when 0x42 {
+          say "ws";
+        }
+        when 0x43 {
+          say "rs";
+        }
+        when 0x44 {
+          say "wcvtp";
+        }
+        when 0x45 {
+          say "rcvt";
+        }
+        when 0x70 {
+          say "wcvtf";
+        }
+        when 0xb0 {
+          push-bytes(1, $!instructions, $index);
+        }
+        when 0xb1 {
+          push-bytes(2, $!instructions, $index);
+        }
+        when 0xb2 {
+          push-bytes(3, $!instructions, $index);
+        }
+        when 0xb3 {
+          push-bytes(4, $!instructions, $index);
+        }
+        when 0xb4 {
+          push-bytes(5, $!instructions, $index);
+        }
+        when 0xb5 {
+          push-bytes(6, $!instructions, $index);
+        }
+        when 0xb6 {
+          push-bytes(7, $!instructions, $index);
+        }
+        when 0xb7 {
+          push-bytes(8, $!instructions, $index);
+        }
+        when 0xb8 {
+          push-words(1, $!instructions, $index);
+        }
+        when 0xb9 {
+          push-words(2, $!instructions, $index);
+        }
+        when 0xba {
+          push-words(3, $!instructions, $index);
+        }
+        when 0xbb {
+          push-words(4, $!instructions, $index);
+        }
+        when 0xbc {
+          push-words(5, $!instructions, $index);
+        }
+        when 0xbd {
+          push-words(6, $!instructions, $index);
+        }
+        when 0xbe {
+          push-words(7, $!instructions, $index);
+        }
+        when 0xbf {
+          push-words(8, $!instructions, $index);
+        }
+      }
+      ++$index;
+    }
+    say "end";
+  }
+}
+
+# TODO -- actually store this data somewhere
+sub read-class-def-table($buf) {
+  my $format = (unpack 'n', $buf)[0];
+  given $format {
+    when 1 {
+      my ($start-glyph-id, $glyph-count) = unpack 'nn', $buf.subbuf(2);
+      my @class-value = unpack 'n' x $glyph-count, $buf.subbuf(4);
+    }
+    when 2 {
+      my ($class-range-count) = unpack 'n', $buf.subbuf(2);
+      my $offset = 4;
+      for ^$class-range-count {
+        my ($first, $last, $class) = unpack 'nnn', $buf.subbuf($offset);
+        $offset += 6;
+      }
+    }
+    default {
+      fail "Unknown Clas Definition Table format $format";
+    }
+  }
+}
+
+class Font::OpenType::Table::Gdef {
+  has $.major-version         is rw;
+  has $.minor-version         is rw;
+  has $.glyph-class-def       is rw;
+  has $.attach-list           is rw;
+  has $.lig-caret-list        is rw;
+  has $.mark-attach-class-def is rw;
+  has $.mark-glyph-sets-def   is rw;
+  has $.item-var-store        is rw;
+
+  method read-table($table, $length) {
+    my ($major, $minor, $gcdoff, $aloff, $lcloff, $macoff) = unpack 'nnnnnn', $table;
+    $!major-version = $major;
+    $!minor-version = $minor;
+    my ($msgoff, $ivsoff) = (0, 0);
+    if $minor >= 2 {
+      $msgoff = unpack 'n', $table.subbuf(12);
+    }
+    if $minor >= 3 {
+      $ivsoff = unpack 'n', $table.subbuf(14);
+    }
+    if $gcdoff {
+      $!glyph-class-def = read-class-def-table($table.subbuf($gcdoff));
+    }
+    if $aloff {
+    }
+  }
+}
+
 class Font::OpenType::Table::Glyf {
-  has @.glyphs;
+  has @.glyphs is rw;
 
   method read-table($table, $length, $loca) {
     my $count = $loca.elems;
     for ^$count -> $i {
       my $length = $i < $count - 1 ?? $loca[$i+1] - $loca[$i] !! $table.elems - $loca[$i];
-      @!glyphs[$i] = $table.subbuf($loca[$i], $length);
+      if $length {
+        @!glyphs[$i] = Font::OpenType::Glyf::read-glyf($table.subbuf($loca[$i], $length));
+      }
     }
   }
 }
@@ -689,10 +954,6 @@ class Font::OpenType {
 
     given $tag {
       unless %!table{$tag}.defined {
-        when 'OS/2' {
-          %!table<OS/2> = Font::OpenType::Table::OS2.new();
-          %!table<OS/2>.read-table($buf, $length);
-        }
         when 'cmap' {
           %!table<cmap> = Font::OpenType::Table::Cmap.new;
           %!table<cmap>.read-table($buf, $length);
@@ -701,14 +962,27 @@ class Font::OpenType {
           %!table<cvt> = Font::OpenType::Table::Cvt.new();
           %!table<cvt>.read-table($buf, $length);
         }
+        when 'FFTM' {
+          # undocumented FontForge specific table
+        }
         when 'fpgm' {
           %!table<fpgm> = Font::OpenType::Table::Fpgm.new();
           %!table<fpgm>.read-table($buf, $length);
+        }
+        when 'gasp' {
+        }
+        when 'GDEF' {
+          %!table<GDEF> = Font::OpenType::Table::Gdef.new();
+          %!table<GDEF>.read-table($buf, $length);
         }
         when 'glyf' {
           self.read-table($fh, 'loca') unless %!table<loca>.defined;
           %!table<glyf> = Font::OpenType::Table::Glyf.new();
           %!table<glyf>.read-table($buf, $length, %!table<loca>.loca);
+        }
+        when 'GPOS' {
+        }
+        when 'GSUB' {
         }
         when 'head' {
           %!table<head> = Font::OpenType::Table::Head.new();
@@ -741,6 +1015,10 @@ class Font::OpenType {
           %!table<name> = Font::OpenType::Table::Name.new();
           %!table<name>.read-table($buf, $length);
         }
+        when 'OS/2' {
+          %!table<OS/2> = Font::OpenType::Table::OS2.new();
+          %!table<OS/2>.read-table($buf, $length);
+        }
         when 'post' {
 	  %!table<post> = Font::OpenType::Table::Post.new;
 	  %!table<post>.read-table($buf, $length);
@@ -761,6 +1039,8 @@ class Font::OpenType {
 
 } # class Font::OpenType
 
-my $filename = '/home/kevinp/Fonts/Univers/UniversBlack.ttf';
+#my $filename = '/home/kevinp/Fonts/Univers/UniversBlack.ttf';
+my $filename = '/home/kevinp/Fonts/defharo_bola-ocho/bola-ocho-demo-ffp.ttf';
 
 my $font = Font::OpenType::read-file($filename);
+$font.table<glyf>.glyphs[35].dump;
