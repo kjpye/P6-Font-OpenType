@@ -1,6 +1,6 @@
 #!/usr/bin/env perl6
 
-use v6;
+use v6.d+;
 
 use P5pack;
 
@@ -13,23 +13,23 @@ sub read-generic-table($object, $table, $length, @table-definition) {
     my ($name, $type) = $pair.kv;
     given $type {
       when 'uint16' {
-        $object."$name"() = (unpack 'n', $table.subbuf($index, 2))[0];
+        $object."$name"() = $table.read-uint16($index, BigEndian);
         $index += 2;
       }
       when 'int16' {
-        $object."$name"() = (unpack 'n', $table.subbuf($index, 2))[0];
+        $object."$name"() = $table.read-int16($index, BigEndian);
         $index += 2;
       }
       when 'uint32' {
-        $object."$name"() = (unpack 'N', $table.subbuf($index, 4))[0];
+        $object."$name"() = $table.read-uint32($index, BigEndian);
         $index += 4;
       }
       when 'int32' {
-        $object."$name"() = (unpack 'N', $table.subbuf($index, 4))[0];
+        $object."$name"() = $table.read-int32($index, BigEndian);
         $index += 4;
       }
       when 'tag' {
-        $object."$name"() = (unpack 'N', $table.subbuf($index, 4))[0];
+        $object."$name"() = $table.read-uint32($index, BigEndian);
         $index += 4;
       }
       when 'uint8-10' {
@@ -37,27 +37,26 @@ sub read-generic-table($object, $table, $length, @table-definition) {
         $index += 4;
       }
       when 'FWORD' {
-        $object."$name"() = (unpack 'n', $table.subbuf($index, 2))[0];
+        $object."$name"() = $table.read-int16($index, BigEndian);
         $index += 2;
       }
       when 'UFWORD' {
-        $object."$name"() = (unpack 'n', $table.subbuf($index, 2))[0];
+        $object."$name"() = $table.read-uint16($index, BigEndian);
         $index += 2;
       }
       when 'Fixed' {
-        my $value = (unpack 'N', $table.subbuf($index, 4))[0];
+        my $value = $table.read-uint32($index, BigEndian);
         $object."$name"() = $value / 65536.0;
         $index += 4;
       }
       when 'F2DOT14' {
-        my $value = (unpack 'n', $table.subbuf($index, 2))[0];
+        my $value = $table.read-uint16($index, BigEndian);
         $object."$name"() = $value / 16384.0;
         $index += 2;
       }
       when 'LONGDATETIME' {
-        my ($high, $low) = (unpack 'NN', $table.subbuf($index, 2))[0];
-        $object."$name"() = ($high +< 32) +| $low;
-        $index += 2;
+        $object."$name"() = $table.read-uint64($index, BigEndian);
+        $index += 8;
       }
     }
     last if $index >= $length;
@@ -121,50 +120,63 @@ class Font::OpenType::Table::Cmap::Encoding {
   has $.glyph-count     is rw;
 }
 
+sub read-uint16-array($buf, $offset is copy, $count) {
+  my @array;
+  for ^$count {
+    @array.push: $buf.read-uint16($offset, BigEndian);
+    $offset += 2;
+  }
+  @array;
+}
+
 class Font::OpenType::Table::Cmap {
   has $.version;
   has $.num-tables;
   has @.encoding-record is rw;
 
   method read-table($table, $length) {
-    ($!version, $!num-tables) = unpack 'nn', $table;
+    $!version    = $table.read-uint16(0, BigEndian);
+    $!num-tables = $table.read-uint16(2, BigEndian);
 
     my $index = 4; # skip version and number of records
     for ^$!num-tables {
-      my ($platform-id, $encoding-id, $offset) = unpack 'nnN', ($table.subbuf: $index, 8);
+      my $platform-id = $table.read-uint16($index, BigEndian); $index += 2;
+      my $encoding-id = $table.read-uint16($index, BigEndian); $index += 2;
+      my $offset      = $table.read-uint32($index, BigEndian); $index += 4;
       @!encoding-record.push: Font::OpenType::Table::Cmap::Encoding.new(platform => $platform-id,
                                                                         encoding => $encoding-id,
                                                                         offset   => $offset);
-      $index += 8;
     }
     for @!encoding-record -> $encoding-table {
       my $index = $encoding-table.offset;
-      my $format = (unpack 'n', $table.subbuf($index, 2))[0];
+      my $format = $table.read-uint16($index, BigEndian); $index += 2;
       given $format {
         when 0 {
-          $encoding-table.length   = unpack 'n', $table.subbuf($index, 4);
-          $encoding-table.language = unpack 'n', $table.subbuf($index, 6);
-          $encoding-table.glyph-id-array = $table.subbuf($index+8, 256);
+          $encoding-table.length   = $table.read-uint16($index, BigEndian); $index += 2;
+          $encoding-table.language = $table.read-uint16($index, BigEndian); $index += 2;
+          $encoding-table.glyph-id-array = $table.subbuf($index, 256);
         }
         when 2 {
           fail "Encoding table format 2 unimplemented";
         }
         when 4 {
-          my ($length, $language, $seg-countX2, $search-range, $entry-selector, $range-shift) = unpack 'nnnnnn', $table.subbuf($index+2, 12);
+          my $length         = $table.read-uint16($index, BigEndian); $index += 2;
+          my $language       = $table.read-uint16($index, BigEndian); $index += 2;
+          my $seg-countX2    = $table.read-uint16($index, BigEndian); $index += 2;
+          my $search-range   = $table.read-uint16($index, BigEndian); $index += 2;
+          my $entry-selector = $table.read-uint16($index, BigEndian); $index += 2;
+          my $range-shift    = $table.read-uint16($index, BigEndian); $index += 2;
           $encoding-table.segcount = $seg-countX2 / 2;
-          my $tindex = $index + 12;
-          $encoding-table.end-code  = unpack 'n' xx $encoding-table.segcount, $table.subbuf($tindex, $seg-countX2);
-          $tindex += $seg-countX2;
-          $tindex += 2;
-          $encoding-table.start-code = unpack 'n' xx $encoding-table.segcount, $table.subbuf($tindex, $seg-countX2);
-          $tindex += $seg-countX2;
-          $encoding-table.id-delta = unpack 'n' xx $encoding-table.segcount, $table.subbuf($tindex, $seg-countX2);
-          $tindex += $seg-countX2;
-          $encoding-table.id-range-offset = unpack 'n' xx $encoding-table.segcount, $table.subbuf($tindex, $seg-countX2);
-          $tindex += $seg-countX2;
-          $encoding-table.glyph-count = ($length - ($tindex - $index)) / 2;
-          $encoding-table.glyph-id-array = unpack 'n' x $encoding-table.glyph-count,
-                                                  $table.subbuf($tindex, $encoding-table.glyph-count * 2);
+          $encoding-table.end-code        = read-uint16-array($table, $index, $encoding-table.segcount);
+          $index += $seg-countX2;
+          $encoding-table.start-code      = read-uint16-array($table, $index, $encoding-table.segcount);
+          $index += $seg-countX2;
+          $encoding-table.id-delta        = read-uint16-array($table, $index, $encoding-table.segcount);
+          $index += $seg-countX2;
+          $encoding-table.id-range-offset = read-uint16-array($table, $index, $encoding-table.segcount);
+          $index += $seg-countX2;
+          $encoding-table.glyph-count = ($length - $index + $encoding-table.offset) / 2;
+          $encoding-table.glyph-id-array  = read-uint16-array($table, $index, $encoding-table.glyph-count);
         }
         when 6 {
           fail "Encoding table format 6 unimplemented";
@@ -196,7 +208,7 @@ class Font::OpenType::Table::Cvt {
   has @.control-value-table;
 
   method read-table($table, $length) {
-    @!control-value-table = unpack('n*', $table);
+    @!control-value-table = read-uint16-array($table, 0, $table.elems / 2);
   }
 }
 
@@ -222,11 +234,12 @@ class Font::OpenType::Glyf {
   has @.y-coordinates is rw;
 
   our sub read-glyf($buf) {
-dd $buf;
-note "bytes available: {$buf.elems}";
-    my $glyf = Font::OpenType::Glyf.new();
-    my ($numcont, $xmin, $ymin, $xmax, $ymax) = unpack 'nnnnn', $buf;
-note "numcont: $numcont, xmin: $xmin, ymin: $ymin, xmax: $xmax, ymax: $ymax";
+    my $glyf    = Font::OpenType::Glyf.new();
+    my $numcont = $buf.read-uint16(0, BigEndian);
+    my $xmin    = $buf.read-uint16(2, BigEndian);
+    my $ymin    = $buf.read-uint16(4, BigEndian);
+    my $xmax    = $buf.read-uint16(6, BigEndian);
+    my $ymax    = $buf.read-uint16(8, BigEndian);
     $glyf.number-of-contours = $numcont;
     $glyf.x-min = $xmin;
     $glyf.y-min = $ymin;
@@ -235,27 +248,20 @@ note "numcont: $numcont, xmin: $xmin, ymin: $ymin, xmax: $xmax, ymax: $ymax";
     if $numcont < 0 {
       fail "Composite glyphs not implemented";
     }
-    $glyf.end-pts-of-contours = unpack('n' x $glyf.number-of-contours, $buf.subbuf(10));
-dd $glyf.end-pts-of-contours;
+    $glyf.end-pts-of-contours = read-uint16-array($buf, 10, $glyf.number-of-contours);
     my $index = $glyf.number-of-contours * 2 + 10;
-    $glyf.instruction-length = (unpack 'n', $buf.subbuf($index))[0];
+    $glyf.instruction-length = $buf.read-uint16($index, BigEndian);
     $index += 2;
-note "index pre-instructions: $index";
-note "instruction-length: {$glyf.instruction-length}";
     $glyf.instructions = $buf.subbuf($index, $glyf.instruction-length);
     $index += $glyf.instruction-length;
-note "index now $index";
   # read flags -- complicated by flag compression
     my $num-flags = $glyf.number-of-contours;
-note "num-flags: $num-flags";
     while $num-flags > 0 {
-      my $flag = (unpack 'c', $buf.subbuf($index++))[0];
-note "flag: $flag";
+      my $flag = $buf.read-uint8($index++);
       $glyf.flags.push: $flag;
       $num-flags--;
       if $flag +& 0x08 { # repeat bit
-        my $repeat-count = (unpack 'c', $buf.subbuf($index++))[0];
-note "repeating flag: $repeat-count times";
+        my $repeat-count = $buf.read-uint8($index++);
         $glyf.flags.append: $flag x $repeat-count;
         $num-flags -= $repeat-count;
       }
@@ -265,7 +271,7 @@ note "repeating flag: $repeat-count times";
     for $glyf.flags -> $flag {
       my $value;
       if $flag +& 0x02 { # X_SHORT_VECTOR
-        $value = (unpack 'C', $buf.subbuf($index++))[0];
+        $value = $buf.read-int8($index++);
         if $flag +& 0x10 {
           $value = -$value;
         }
@@ -273,7 +279,7 @@ note "repeating flag: $repeat-count times";
         if $flag +& 0x10 {
           $value = $oldvalue;
         } else {
-          $value = (unpack 'n', $buf.subbuf($index))[0];
+          $value = $buf.read-uint16($index, BigEndian);
         }
       }
       $glyf.x-coordinates.push: $value;
@@ -284,7 +290,7 @@ note "repeating flag: $repeat-count times";
     for $glyf.flags -> $flag {
       my $value;
       if $flag +& 0x04 { # Y_SHORT_VECTOR
-        $value = (unpack 'C', $buf.subbuf($index++))[0];
+        $value = $buf.read-int8($index++);
         if $flag +& 0x20 {
           $value = -$value;
         }
@@ -292,7 +298,7 @@ note "repeating flag: $repeat-count times";
         if $flag +& 0x20 {
           $value = $oldvalue;
         } else {
-          $value = (unpack 'n', $buf.subbuf($index))[0];
+          $value = $buf.read-uint16($index, BigEndian);
         }
       }
       $glyf.y-coordinates.push: $value;
@@ -325,11 +331,158 @@ note "repeating flag: $repeat-count times";
     my $index = 0;
     while $index < $!instructions.elems {
       given $!instructions[$index] {
-        when 0x00 {
-          say "svtca[0]";
+        when 0x00 .. 0x01 {
+          say "svtca[{$_ - 0x00}]";
         }
-        when 0x01 {
-          say "svtca[1]";
+        when 0x02 .. 0x03 {
+          say "spvtca[{$_ - 0x02}]";
+        }
+        when 0x04 .. 0x05 {
+          say "sfvtca[{$_ - 0x04}]";
+        }
+        when 0x06 .. 0x07 {
+          say "spvtl[{$_ - 0x06}]";
+        }
+        when 0x08 .. 0x09 {
+          say "sfvtl[{$_ - 0x08}]";
+        }
+        when 0x0a {
+          say "spvfs";
+        }
+        when 0x0b {
+          say "sfvfs";
+        }
+        when 0x0c {
+          say "gpv";
+        }
+        when 0x0d {
+          say "gfv";
+        }
+        when 0x0e {
+          say "sfvtpv";
+        }
+        when 0x0f {
+          say "isect";
+        }
+        when 0x10 {
+          say "srp0";
+        }
+        when 0x11 {
+          say "srp1";
+        }
+        when 0x12 {
+          say "srp2";
+        }
+        when 0x13 {
+          say "szp0";
+        }
+        when 0x14 {
+          say "szp1";
+        }
+        when 0x15 {
+          say "szp2";
+        }
+        when 0x16 {
+          say "szps";
+        }
+        when 0x17 {
+          say "sloop";
+        }
+        when 0x18 {
+          say "rtg";
+        }
+        when 0x19 {
+          say "rthg";
+        }
+        when 0x1a {
+          say "smd";
+        }
+        when 0x1b {
+          say "else";
+        }
+        when 0x1c {
+          say "jmpr";
+        }
+        when 0x1d {
+          say "scvtci";
+        }
+        when 0x1e {
+          say "sswci";
+        }
+        when 0x1f {
+          say "ssw";
+        }
+        when 0x20 {
+          say "dup";
+        }
+        when 0x21 {
+          say "pop";
+        }
+        when 0x22 {
+          say "clear";
+        }
+        when 0x23 {
+          say "swap";
+        }
+        when 0x24 {
+          say "depth";
+        }
+        when 0x25 {
+          say "cindex";
+        }
+        when 0x26 {
+          say "mindex";
+        }
+        when 0x27 {
+          say "alignpts";
+        }
+        when 0x29 {
+          say "utp";
+        }
+        when 0x2a {
+          say "loopcall";
+        }
+        when 0x2b {
+          say "call";
+        }
+        when 0x2c {
+          say "fdef";
+        }
+        when 0x2d {
+          say "endf";
+        }
+        when 0x2e .. 0x2f {
+          say "mdap[{$_ - 0x2e}]";
+        }
+        when 0x30 .. 0x31 {
+          say "iup[{$_ - 0x30}]";
+        }
+        when 0x34 .. 0x35 {
+          say "shc[{$_ - 0x33}]";
+        }
+        when 0x32 .. 0x33 {
+          say "shp[{$_ - 0x32}]";
+        }
+        when 0x36 .. 0x37 {
+          say "shz[{$_ - 0x36}]";
+        }
+        when 0x38 {
+          say "shpix";
+        }
+        when 0x39 {
+          say "ip";
+        }
+        when 0x3a .. 0x3b {
+          say "msirp[{$_ - 0x3a}]";
+        }
+        when 0x3c {
+          say "alignrp";
+        }
+        when 0x3d {
+          say "rtdg";
+        }
+        when 0x3e .. 0x3f {
+          say "miap[{$_ - 0x3e}]";
         }
         when 0x40 {
           my $count = $!instructions[++$index];
@@ -362,56 +515,203 @@ note "repeating flag: $repeat-count times";
         when 0x45 {
           say "rcvt";
         }
+        when 0x46 .. 0x47 {
+          say "gc[{$_ - 0x46}]";
+        }
+        when 0x48 {
+          say "scfs";
+        }
+        when 0x49 .. 0x4a {
+          say "md[{$_ - 0x49}]";
+        }
+        when 0x4b {
+          say "mppem";
+        }
+        when 0x4d {
+          say "flipon";
+        }
+        when 0x4e {
+          say "flipoff";
+        }
+        when 0x4f {
+          say "debug";
+        }
+        when 0x50 {
+          say "lt";
+        }
+        when 0x51 {
+          say "lteq";
+        }
+        when 0x52 {
+          say "gt";
+        }
+        when 0x53 {
+          say "gteq";
+        }
+        when 0x54 {
+          say "eq";
+        }
+        when 0x55 {
+          say "neq";
+        }
+        when 0x56 {
+          say "odd";
+        }
+        when 0x57 {
+          say "even";
+        }
+        when 0x58 {
+          say "if";
+        }
+        when 0x59 {
+          say "eif";
+        }
+        when 0x5a {
+          say "and";
+        }
+        when 0x5b {
+          say "or";
+        }
+        when 0x5c {
+          say "not";
+        }
+        when 0x5d {
+          say "deltap1";
+        }
+        when 0x5e {
+          say "sdb";
+        }
+        when 0x5f {
+          say "sds";
+        }
+        when 0x60 {
+          say "add";
+        }
+        when 0x61 {
+          say "sub";
+        }
+        when 0x62 {
+          say "div";
+        }
+        when 0x63 {
+          say "mul";
+        }
+        when 0x64 {
+          say "abs";
+        }
+        when 0x65 {
+          say "neg";
+        }
+        when 0x66 {
+          say "floor";
+        }
+        when 0x67 {
+          say "ceiling";
+        }
+        when 0x68 .. 0x6b {
+          say "round[{$_ - 0x68}]";
+        }
+        when 0x6c .. 0x6f {
+          say "nround[{$_ - 0x6c}]";
+        }
         when 0x70 {
           say "wcvtf";
         }
-        when 0xb0 {
-          push-bytes(1, $!instructions, $index);
+        when 0x71 {
+          say "deltap2";
         }
-        when 0xb1 {
-          push-bytes(2, $!instructions, $index);
+        when 0x72 {
+          say "deltap3";
         }
-        when 0xb2 {
-          push-bytes(3, $!instructions, $index);
+        when 0x73 {
+          say "deltac1";
         }
-        when 0xb3 {
-          push-bytes(4, $!instructions, $index);
+        when 0x74 {
+          say "deltac2";
         }
-        when 0xb4 {
-          push-bytes(5, $!instructions, $index);
+        when 0x75 {
+          say "deltac3";
         }
-        when 0xb5 {
-          push-bytes(6, $!instructions, $index);
+        when 0x76 {
+          say "sround";
         }
-        when 0xb6 {
-          push-bytes(7, $!instructions, $index);
+        when 0x77 {
+          say "s45round";
         }
-        when 0xb7 {
-          push-bytes(8, $!instructions, $index);
+        when 0x78 {
+          say "jrot";
         }
-        when 0xb8 {
-          push-words(1, $!instructions, $index);
+        when 0x79 {
+          say "jrof";
         }
-        when 0xb9 {
-          push-words(2, $!instructions, $index);
+        when 0x7a {
+          say "roff";
         }
-        when 0xba {
-          push-words(3, $!instructions, $index);
+ #       when 0x7b {
+ #         say "ron";
+ #       }
+        when 0x7c {
+          say "rutg";
         }
-        when 0xbb {
-          push-words(4, $!instructions, $index);
+        when 0x7d {
+          say "rdtg";
         }
-        when 0xbc {
-          push-words(5, $!instructions, $index);
+        when 0x7e {
+          say "sangw";
         }
-        when 0xbd {
-          push-words(6, $!instructions, $index);
+        when 0x80 {
+          say "flippt";
         }
-        when 0xbe {
-          push-words(7, $!instructions, $index);
+        when 0x81 {
+          say "fliprgon";
         }
-        when 0xbf {
-          push-words(8, $!instructions, $index);
+        when 0x82 {
+          say "fliprgoff";
+        }
+        when 0x85 {
+          say "scanctrl";
+        }
+        when 0x86 .. 0x87 {
+          say "sdpvtl[{$_ - 0x86}]";
+        }
+        when 0x88 {
+          say "getinfo";
+        }
+        when 0x89 {
+          say "idef";
+        }
+        when 0x8a {
+          say "roll";
+        }
+        when 0x8b {
+          say "max";
+        }
+        when 0x8c {
+          say "min";
+        }
+        when 0x8d {
+          say "scantype";
+        }
+        when 0x8e {
+          say "instctrl";
+        }
+        when 0x91 {
+          say "getvariation";
+        }
+        when 0xb0 .. 0xb7 {
+          push-bytes($_ - 0xaf, $!instructions, $index);
+        }
+        when 0xb8 .. 0xbf {
+          push-words($_ - 0xb7, $!instructions, $index);
+        }
+        when 0xc0 .. 0xdf {
+          say "mdrp[{($_ +& 0x10) ?? 1 !! 0} {($_ +& 0x08) ?? 1 !! 0} {($_ +& 0x04) ?? 1 !! 0} {$_ +& 0x03}]";
+        }
+        when 0xe0 .. 0xff {
+          say "mirp[{($_ +& 0x10) ?? 1 !! 0} {($_ +& 0x08) ?? 1 !! 0} {($_ +& 0x04) ?? 1 !! 0} {$_ +& 0x03}]";
+        }
+        default {
+          fail "Unknown instruction $_";
         }
       }
       ++$index;
@@ -422,18 +722,20 @@ note "repeating flag: $repeat-count times";
 
 # TODO -- actually store this data somewhere
 sub read-class-def-table($buf) {
-  my $format = (unpack 'n', $buf)[0];
+  my $format = $buf.read-uint16(0, BigEndian);
   given $format {
     when 1 {
-      my ($start-glyph-id, $glyph-count) = unpack 'nn', $buf.subbuf(2);
-      my @class-value = unpack 'n' x $glyph-count, $buf.subbuf(4);
+      my $start-glyph-id = $buf.read-uint16(2, BigEndian);
+      my $glyph-count    = $buf.read-uint16(4, BigEndian);
+      my @class-value    = read-uint16-array($buf, 4, $glyph-count);
     }
     when 2 {
-      my ($class-range-count) = unpack 'n', $buf.subbuf(2);
+      my $class-range-count = $buf.read-uint16(2, BigEndian);
       my $offset = 4;
       for ^$class-range-count {
-        my ($first, $last, $class) = unpack 'nnn', $buf.subbuf($offset);
-        $offset += 6;
+        my $first = $buf.read-uint16($offset, BigEndian); $offset += 2;
+        my $last  = $buf.read-uint16($offset, BigEndian); $offset += 2;
+        my $class = $buf.read-uint16($offset, BigEndian); $offset += 2;
       }
     }
     default {
@@ -453,15 +755,20 @@ class Font::OpenType::Table::Gdef {
   has $.item-var-store        is rw;
 
   method read-table($table, $length) {
-    my ($major, $minor, $gcdoff, $aloff, $lcloff, $macoff) = unpack 'nnnnnn', $table;
+    my $major  = $table.read-uint16(0,  BigEndian);
+    my $minor  = $table.read-uint16(2,  BigEndian);
+    my $gcdoff = $table.read-uint16(4,  BigEndian);
+    my $aloff  = $table.read-uint16(6,  BigEndian);
+    my $lcloff = $table.read-uint16(8,  BigEndian);
+    my $macoff = $table.read-uint16(10, BigEndian);
     $!major-version = $major;
     $!minor-version = $minor;
     my ($msgoff, $ivsoff) = (0, 0);
     if $minor >= 2 {
-      $msgoff = unpack 'n', $table.subbuf(12);
+      $msgoff = $table.read-uint16(12, BigEndian);
     }
     if $minor >= 3 {
-      $ivsoff = unpack 'n', $table.subbuf(14);
+      $ivsoff = $table.read-uint16(14, BigEndian);
     }
     if $gcdoff {
       $!glyph-class-def = read-class-def-table($table.subbuf($gcdoff));
@@ -474,10 +781,9 @@ class Font::OpenType::Table::Gdef {
 class Font::OpenType::Table::Glyf {
   has @.glyphs is rw;
 
-  method read-table($table, $length, $loca) {
-    my $count = $loca.elems;
-    for ^$count -> $i {
-      my $length = $i < $count - 1 ?? $loca[$i+1] - $loca[$i] !! $table.elems - $loca[$i];
+  method read-table($table, $length, $num-glyphs, $loca) {
+    for ^$num-glyphs -> $i {
+      my $length = $i < $num-glyphs - 1 ?? $loca[$i+1] - $loca[$i] !! $table.elems - $loca[$i];
       if $length {
         @!glyphs[$i] = Font::OpenType::Glyf::read-glyf($table.subbuf($loca[$i], $length));
       }
@@ -505,27 +811,26 @@ class Font::OpenType::Table::Head {
     has $.glyph-data-format;
 
   method read-table(Buf $table, Int $length) {
-    my ($major-version, $minor-version) = unpack 'nn', $table;
+    my $major-version = $table.read-uint16(0, BigEndian);
+    my $minor-version = $table.read-uint16(2, BigEndian);
     fail "Unknown font header table version $major-version.$minor-version"
       unless $major-version == 1 && $minor-version == 0;
-    my $font-revision = unpack('N', $table.subbuf(4))[0];
-    $font-revision /= 65536.0;
-    ($!checksum-adjustment,
-     $!magic-number,
-     $!flags,
-     $!units-per-em,
-     $!created,
-     $!modified,
-     $!x-min,
-     $!y-min,
-     $!x-max,
-     $!y-max,
-     $!mac-style,
-     $!lowest-rec-ppem,
-     $!font-direction-hint,
-     $!index-to-loc-format,
-     $!glyph-data-format) =
-           unpack('NNnnQQnnnnnnnnn', $table.subbuf(8)); # TODO -- fix byte order of dates
+    my $font-revision     = $table.read-uint32(4, BigEndian) / 65536.0;
+    $!checksum-adjustment = $table.read-uint32(8,  BigEndian);
+    $!magic-number        = $table.read-uint32(12,  BigEndian);
+    $!flags               = $table.read-uint16(16,  BigEndian);
+    $!units-per-em        = $table.read-uint16(18,  BigEndian);
+    $!created             = $table.read-uint64(20,  BigEndian);
+    $!modified            = $table.read-uint64(28,  BigEndian);
+    $!x-min               = $table.read-uint16(36,  BigEndian);
+    $!y-min               = $table.read-uint16(38,  BigEndian);
+    $!x-max               = $table.read-uint16(40,  BigEndian);
+    $!y-max               = $table.read-uint16(42,  BigEndian);
+    $!mac-style           = $table.read-uint16(44,  BigEndian);
+    $!lowest-rec-ppem     = $table.read-uint16(46,  BigEndian);
+    $!font-direction-hint = $table.read-uint16(48,  BigEndian);
+    $!index-to-loc-format = $table.read-uint16(50,  BigEndian);
+    $!glyph-data-format   = $table.read-uint16(52,  BigEndian);
     fail "Bad magic number in Font header table" unless $!magic-number == 0x5f0f3cf5;
     $loc-format-type = $!index-to-loc-format;
   }
@@ -587,14 +892,13 @@ class Font::OpenType::Table::Hmtx {
     my $index = 0;
     my $i = 0;
     while $i++ < $number-of-hmetrics {
-      my ($aw, $lsb) = unpack 'nn', $table.subbuf($index);
-      $index += 4;
+      my $aw  = $table.read-uint16($index, BigEndian); $index += 2;
+      my $lsb = $table.read-uint16($index, BigEndian); $index += 2;
 #      $!advanced-width.push: $aw;
 #      $!left-side-bearing.push: $lsb;
     }
     while $i++ < $num-glyphs {
-      my $lsb = $table.subbuf($index).unpack: 'n';
-      $index += 2;
+      my $lsb = $table.read-uint16($index, BigEndian);
 #      $!left-side-bearing.push: $lsb;
     }
   }
@@ -656,22 +960,26 @@ class Font::OpenType::Table::Kern {
   has @.tables;
 
   method read-table($table, $length) {
-    ($!version, $!n-tables) = unpack 'nn', $table;
+    $!version  = $table.read-uint16(0, BigEndian);
+    $!n-tables = $table.read-uint16(2, BigEndian);
     my $index = 4;
     for ^$!n-tables {
-      my $version;
-      ($version, $!length, $!coverage) = unpack 'nnn', $table.subbuf(4);
-      $index += 6;
+      my $version = $table.read-uint16($index, BigEndian); $index += 2;
+      $!length    = $table.read-uint16($index, BigEndian); $index += 2;
+      $!coverage  = $table.read-uint16($index, BigEndian); $index += 2;
       my $format = ($!coverage +> 8) +& 0xff;
       given $format {
         when 0 {
-          my ($n-pairs, $search-range, $entry-selector, $range-shift) = unpack 'nnnn', $table.subbuf($index);
+          my $n-pairs        = $table.read-uint16($index, BigEndian); $index += 2;
+          my $search-range   = $table.read-uint16($index, BigEndian); $index += 2;
+          my $entry-selector = $table.read-uint16($index, BigEndian); $index += 2;
+          my $range-shift    = $table.read-uint16($index, BigEndian); $index += 2;
           my $subtable = Font::OpenType::Table::Kern::Table.new(:$n-pairs, :$search-range, :$entry-selector, :$range-shift);
           @!tables.push: $subtable;
-          $index += 8;
           for ^$n-pairs {
-            my ($left, $right, $value) = unpack 'nnn', $table.subbuf($index);
-            $index += 6;
+            my $left  = $table.read-uint16($index, BigEndian); $index += 2;
+            my $right = $table.read-uint16($index, BigEndian); $index += 2;
+            my $value = $table.read-uint16($index, BigEndian); $index += 2;
             $subtable.pairs.push: %( left => $left, right => $right, value => $value);
           }
         }
@@ -692,11 +1000,22 @@ class Font::OpenType::Table::Loca {
 
   method read-table($table, $length, $loc-format-type) {
     my $index = 0;
-    my $format = $loc-format-type ?? 'N' !! 'n';
-    $!item-length = $loc-format-type ?? 4 !! 2;
-    while $index < $length {
-      @!loca.push: (unpack $format, $table.subbuf($index, $!item-length))[0];
-      $index += $!item-length;
+    given $loc-format-type {
+      when 0 {
+        while $index < $length {
+          @!loca.push: $table.read-uint16($index, BigEndian) * 2;
+          $index += 2;
+        }
+      }
+      when 1 {
+        while $index < $length {
+          @!loca.push: $table.read-uint32($index, BigEndian);
+          $index += 4;
+        }
+      }
+      default {
+        fail "Unknown loca table format $loc-format-type, should be 0 or 1";
+      }
     }
   }
 }
@@ -711,12 +1030,19 @@ class Font::OpenType::Table::Name {
   has $.strings;
 
   method read-table($table, $length) {
-    ($!format, $!count, $!string-offset) = unpack 'nnn', $table;
+    $!format        = $table.read-uint16(0, BigEndian);
+    $!count         = $table.read-uint16(2, BigEndian);
+    $!string-offset = $table.read-uint16(4, BigEndian);
 
     # read name records
     my $index = 6;
     for ^$!count {
-      my ($platform-id, $encoding-id, $language-id, $name-id, $length, $offset) = unpack 'nnnnnn', $table.subbuf($index);
+      my $platform-id = $table.read-uint16($index, BigEndian); $index += 2;
+      my $encoding-id = $table.read-uint16($index, BigEndian); $index += 2;
+      my $language-id = $table.read-uint16($index, BigEndian); $index += 2;
+      my $name-id     = $table.read-uint16($index, BigEndian); $index += 2;
+      my $length      = $table.read-uint16($index, BigEndian); $index += 2;
+      my $offset      = $table.read-uint16($index, BigEndian); $index += 2;
       @!name-record.push: %(
                            platform-id => $platform-id,
                            encoding-id => $encoding-id,
@@ -725,7 +1051,6 @@ class Font::OpenType::Table::Name {
                            length      => $length,
                            offset      => $offset,
                          );
-      $index += 12;
     }
 
     # read lang tag records
@@ -733,10 +1058,10 @@ class Font::OpenType::Table::Name {
       when 0 {
       }
       when 1 {
-        $!lang-tag-count = (unpack 'n', $table.subbuf($index))[0];
+        $!lang-tag-count = $table.read=uint16($index, BigEndian);
         for ^$!lang-tag-count {
-          my ($length, $offset) = unpack 'nn', $table.subbuf($index);
-          $index += 4;
+          my $length = $table.read-uint16($index, BigEndian); $index += 2;
+          my $offset = $table.read-uint16($index, BigEndian); $index += 2;
           @!lang-tag-record.push: $(length => $length, offset => $offset);
         }
       }
@@ -866,15 +1191,15 @@ class Font::OpenType::Table::Post {
       when 1.0 {
       }
       when 2.0 {
-        $!num-glyphs = unpack 'n', $table.subbuf(28, 2);
+        $!num-glyphs = $table.read-uint16(28, BigEndian);
         my $index = 30;
-        @!glyph-name-index = unpack('n' xx $num-glyphs, $table.subbuf($index));
-        @!names            = unpack('n' xx $num-glyphs, $table.subbuf($index + $num-glyphs*2));
+        @!glyph-name-index = read-uint16-array($table, $index, $num-glyphs);
+        @!names            = read-uint16-array($table, $index + $num-glyphs*2, $num-glyphs);
       }
       when 2.5 {
         my $index = 30;
-        $!num-glyphs = unpack 'n', $table.subbug(28, 2);
-        @!glyph-name-index = unpack 'n' xx $num-glyphs, $table.subbuf($index);
+        $!num-glyphs = $table.read-uint16(28, BigEndian);
+        @!glyph-name-index = read-uint16-array($table, $index, $num-glyphs);
       }
       when 3.0 {
       }
@@ -886,6 +1211,17 @@ class Font::OpenType::Table::Post {
 }
 
 class Font::OpenType::Table::Prep {
+  has $.program;
+
+  method read-table($table, $length) {
+    $!program = $table;
+  }
+}
+
+# The webf table is undocumented
+# This class exists simply to stop font loading from failing; the table will be ignored
+
+class Font::OpenType::Table::Webf {
   has $.program;
 
   method read-table($table, $length) {
@@ -918,13 +1254,19 @@ class Font::OpenType {
     my $otf = Font::OpenType.new();
 
     $fh.seek: 4; # skip file type
-    my $buf = $fh.read: 8;
-    my ($num-tables, $search-range, $entry-selector, $range-shift) = unpack('nnnn', $buf);
+    my $buf            = $fh.read: 8;
+    my $num-tables     = $buf.read-uint16(0, BigEndian);
+    my $search-range   = $buf.read-uint16(2, BigEndian);
+    my $entry-selector = $buf.read-uint16(4, BigEndian);
+    my $range-shift    = $buf.read-uint16(6, BigEndian);
 
     # read table record entries
     for ^$num-tables {
       $buf = $fh.read: 16;
-      my ($table-tag, $check-sum, $offset, $length) = unpack('a4NNN', $buf);
+      my $table-tag = $buf.subbuf(0, 4).decode(enc => 'utf8-c8');
+      my $check-sum = $buf.read-uint32(4,  BigEndian);
+      my $offset    = $buf.read-uint32(8,  BigEndian);
+      my $length    = $buf.read-uint32(12, BigEndian);
       %table{$table-tag} = %(check-sum => $check-sum, offset => $offset, length => $length, read => 0);
     }
 
@@ -977,8 +1319,9 @@ class Font::OpenType {
         }
         when 'glyf' {
           self.read-table($fh, 'loca') unless %!table<loca>.defined;
+          self.read-table($fh, 'maxp') unless %!table<maxp>.defined;
           %!table<glyf> = Font::OpenType::Table::Glyf.new();
-          %!table<glyf>.read-table($buf, $length, %!table<loca>.loca);
+          %!table<glyf>.read-table($buf, $length, %!table<maxp>.num-glyphs, %!table<loca>.loca);
         }
         when 'GPOS' {
         }
@@ -1027,6 +1370,10 @@ class Font::OpenType {
 	  %!table<prep> = Font::OpenType::Table::Prep.new;
 	  %!table<prep>.read-table($buf, $length);
         }
+        when 'webf' {
+	  %!table<webf> = Font::OpenType::Table::Webf.new;
+	  %!table<webf>.read-table($buf, $length);
+        }
         default {
           fail "Unknown or unimplemented table type $tag";
         }
@@ -1043,4 +1390,4 @@ class Font::OpenType {
 my $filename = '/home/kevinp/Fonts/defharo_bola-ocho/bola-ocho-demo-ffp.ttf';
 
 my $font = Font::OpenType::read-file($filename);
-$font.table<glyf>.glyphs[35].dump;
+$font.table<glyf>.glyphs[34].dump;
